@@ -1,5 +1,6 @@
 #include "kbprofile.h"
 #include "kb.h"
+#include <cstdio>
 
 KbProfile::KbProfile(Kb* parent, const KeyMap& keyMap, const KbProfile& other) :
     QObject(parent), _currentMode(0), _name(other._name), _id(other._id), _keyMap(keyMap), _needsSave(true)
@@ -10,6 +11,8 @@ KbProfile::KbProfile(Kb* parent, const KeyMap& keyMap, const KbProfile& other) :
             _currentMode = newMode;
         _modes.append(newMode);
     }
+    QByteArray guidC = _id.guid.toString().toUtf8();
+    printf("New copied profile: %s\n", guidC.constData());
 }
 
 KbProfile::KbProfile(Kb* parent, const KeyMap& keyMap, const QString& guid, const QString& modified) :
@@ -17,6 +20,8 @@ KbProfile::KbProfile(Kb* parent, const KeyMap& keyMap, const QString& guid, cons
 {
     if(_id.guid.isNull())
         _id.guid = QUuid::createUuid();
+    QByteArray guidC = _id.guid.toString().toUtf8();
+    printf("New profile: %s\n", guidC.constData());
 }
 
 KbProfile::KbProfile(Kb* parent, const KeyMap& keyMap, CkbSettings& settings, const QString& guid) :
@@ -43,6 +48,8 @@ KbProfile::KbProfile(Kb* parent, const KeyMap& keyMap, CkbSettings& settings, co
         if(current == mode->id().guid || !_currentMode)
             _currentMode = mode;
     }
+    QByteArray guidC = _id.guid.toString().toUtf8();
+    printf("Loaded profile: %s\n", guidC.constData());
 }
 
 void KbProfile::save(CkbSettings& settings){
@@ -63,6 +70,13 @@ void KbProfile::save(CkbSettings& settings){
         KbMode* mode = _modes.at(i);
         mode->save(settings);
     }
+    QByteArray guidC = _id.guid.toString().toUtf8();
+    printf("Saved profile: %s\n", guidC.constData());
+}
+
+KbProfile::~KbProfile(){
+    QByteArray guidC = _id.guid.toString().toUtf8();
+    printf("Deleted profile: %s\n", guidC.constData());
 }
 
 bool KbProfile::needsSave() const {

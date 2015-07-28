@@ -2,6 +2,7 @@
 #include "ckbsettingswriter.h"
 #include <QThread>
 #include <QMutex>
+#include <cstdio>
 
 // Shared global QSettings object
 static QSettings* _globalSettings = 0;
@@ -101,6 +102,9 @@ bool CkbSettings::contains(const QString& key) const {
 
 QVariant CkbSettings::value(const QString& key, const QVariant& defaultValue) const {
     lockMutex;
+    QByteArray keyC = pwd(key).toUtf8();
+    QByteArray valC = backing->value(pwd(key), defaultValue).toString().toUtf8();
+    printf("Settings: retrieving %s -> %s\n", keyC.constData(), valC.constData());
     return backing->value(pwd(key), defaultValue);
 }
 

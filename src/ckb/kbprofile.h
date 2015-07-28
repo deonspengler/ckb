@@ -54,6 +54,7 @@ public:
     inline KbMode*  currentMode() const                 { return _currentMode; }
     inline void     currentMode(KbMode* newCurrentMode) { _needsSave = true; _currentMode = newCurrentMode; }
 
+    ~KbProfile();
 private:
     KbMode* _currentMode;
     QString _name;
