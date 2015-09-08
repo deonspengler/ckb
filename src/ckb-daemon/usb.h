@@ -5,27 +5,33 @@
 #include "keymap.h"
 
 // Vendor/product codes
-#define V_CORSAIR       0x1b1c
-#define V_CORSAIR_STR   "1b1c"
+#define V_CORSAIR           0x1b1c
+#define V_CORSAIR_STR       "1b1c"
 
-#define P_K65           0x1b17
-#define P_K65_STR       "1b17"
+#define P_K65               0x1b17
+#define P_K65_STR           "1b17"
 #define IS_K65(kb) ((kb)->vendor == V_CORSAIR && (kb)->product == P_K65)
 
-#define P_K70           0x1b13
-#define P_K70_STR       "1b13"
-#define P_K70_NRGB      0x1b09
-#define P_K70_NRGB_STR  "1b09"
-#define IS_K70(kb) ((kb)->vendor == V_CORSAIR && ((kb)->product == P_K70 || (kb)->product == P_K70_NRGB))
+#define P_K70               0x1b13
+#define P_K70_STR           "1b13"
+#define P_K70_NRGB          0x1b09
+#define P_K70_NRGB_STR      "1b09"
 
-#define P_K95           0x1b11
-#define P_K95_STR       "1b11"
-#define P_K95_NRGB      0x1b08
-#define P_K95_NRGB_STR  "1b08"
+#define P_K95               0x1b11
+#define P_K95_STR           "1b11"
+#define P_K95_NRGB          0x1b08
+#define P_K95_NRGB_STR      "1b08"
 #define IS_K95(kb) ((kb)->vendor == V_CORSAIR && ((kb)->product == P_K95 || (kb)->product == P_K95_NRGB))
 
-#define P_M65           0x1b12
-#define P_M65_STR       "1b12"
+#define P_M65               0x1b12
+#define P_M65_STR           "1b12"
+#define IS_M65(kb) ((kb)->vendor == V_CORSAIR && (kb)->product == P_M65)
+
+#define P_STRAFE_NRGB       0x1b15
+#define P_STRAFE_NRGB_STR   "1b15"
+#define IS_STRAFE(kb) ((kb)->vendor == V_CORSAIR && (kb)->product == P_STRAFE_NRGB)
+// FIXME: put this back where it belongs
+#define IS_K70(kb) ((kb)->vendor == V_CORSAIR && ((kb)->product == P_K70 || (kb)->product == P_K70_NRGB || (kb)->product == P_STRAFE_NRGB))
 
 const char* vendor_str(short vendor);
 const char* product_str(short product);

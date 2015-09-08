@@ -324,6 +324,7 @@ static _model models[] = {
     { P_K70_NRGB_STR, P_K70_NRGB },
     { P_K95_STR, P_K95 },
     { P_K95_NRGB_STR, P_K95_NRGB },
+    { P_STRAFE_NRGB_STR, P_STRAFE_NRGB },
     // Mice
     { P_M65_STR, P_M65 }
 };
