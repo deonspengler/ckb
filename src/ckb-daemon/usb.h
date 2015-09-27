@@ -24,8 +24,8 @@
 #define P_K95_NRGB_STR  "1b08"
 #define IS_K95(kb) ((kb)->vendor == V_CORSAIR && ((kb)->product == P_K95 || (kb)->product == P_K95_NRGB))
 
-#define P_M65           0x1b12
-#define P_M65_STR       "1b12"
+#define P_M65           0x1b19
+#define P_M65_STR       "1b19"
 
 const char* vendor_str(short vendor);
 const char* product_str(short product);
