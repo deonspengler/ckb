@@ -9,10 +9,13 @@
 
 static const int KEY_SIZE = 12;
 
-static QImage* m65Overlay = 0;
+static QImage* m65Overlay = 0, *sabOverlay = 0, *scimOverlay = 0;
+
+// KbLight.cpp
+extern QRgb monoRgb(float r, float g, float b);
 
 KeyWidget::KeyWidget(QWidget *parent, bool rgbMode) :
-    QWidget(parent), mouseDownX(-1), mouseDownY(-1), mouseCurrentX(-1), mouseCurrentY(-1), mouseDownMode(NONE), _rgbMode(rgbMode)
+    QWidget(parent), mouseDownX(-1), mouseDownY(-1), mouseCurrentX(-1), mouseCurrentY(-1), mouseDownMode(NONE), _rgbMode(rgbMode), _monochrome(false)
 {
     setMouseTracking(true);
     setAutoFillBackground(false);
@@ -51,10 +54,11 @@ void KeyWidget::colorMap(const ColorMap& newColorMap){
     update();
 }
 
-void KeyWidget::displayColorMap(ColorMap newDisplayMap){
+void KeyWidget::displayColorMap(ColorMap newDisplayMap, QStringList indicators){
     if(!isVisible())
         return;
     _displayColorMap = newDisplayMap;
+    _indicators = indicators;
     update();
 }
 
@@ -67,6 +71,7 @@ void KeyWidget::paintEvent(QPaintEvent*){
     const QColor bgColor(68, 64, 64);
     const QColor keyColor(112, 110, 110);
     const QColor sniperColor(130, 90, 90);
+    const QColor thumbColor(34, 32, 32);
     const QColor sidelightColor(0, 0, 0, 0);
     const QColor highlightColor(136, 176, 240);
     const QColor highlightAnimColor(136, 200, 240);
@@ -106,20 +111,40 @@ void KeyWidget::paintEvent(QPaintEvent*){
     painter.setPen(Qt::NoPen);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if(model == KeyMap::M65){
-        // M65: Draw overlay
-        if(!m65Overlay)
-            m65Overlay = new QImage(":/img/overlay_m65.png");
-        const QImage& overlay = *m65Overlay;
-        painter.setBrush(palette().brush(QPalette::Window));
-        painter.drawRect(0, 0, width(), height());
-        float oXScale = scale / 9.f, oYScale = scale / 9.f;             // The overlay has a resolution of 9px per keymap unit
-        float x = (2.f + offX) * scale, y = (-2.f + offY) * scale;      // It is positioned at (2, -2)
-        int w = overlay.width() * oXScale, h = overlay.height() * oYScale;
-        // We need to transform the image with QImage::scaled() because painter.drawImage() will butcher it, even with smoothing enabled
-        // However, the width/height need to be rounded to integers
-        int iW = round(w), iH = round(h);
-        painter.drawImage(QRectF((x - (iW - w) / 2.f) / ratio, (y - (iH - h) / 2.f) / ratio, iW / ratio, iH / ratio), overlay.scaled(iW, iH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+    if(keyMap.isMouse()){
+        // Draw mouse overlays
+        const QImage* overlay = 0;
+        float xpos = 0.f, ypos = 0.f;
+        if(model == KeyMap::M65){
+            if(!m65Overlay)
+                m65Overlay = new QImage(":/img/overlay_m65.png");
+            overlay = m65Overlay;
+            xpos = 2.f;
+            ypos = -2.f;
+        } else if(model == KeyMap::SABRE){
+            if(!sabOverlay)
+                sabOverlay = new QImage(":/img/overlay_sabre.png");
+            overlay = sabOverlay;
+            xpos = 1.f;
+            ypos = -2.f;
+        } else if(model == KeyMap::SCIMITAR){
+            if(!scimOverlay)
+                scimOverlay = new QImage(":/img/overlay_scimitar.png");
+            overlay = scimOverlay;
+            xpos = 3.5f;
+            ypos = -2.f;
+        }
+        if(overlay){
+            painter.setBrush(palette().brush(QPalette::Window));
+            painter.drawRect(0, 0, width(), height());
+            float oXScale = scale / 9.f, oYScale = scale / 9.f;             // The overlay has a resolution of 9px per keymap unit
+            float x = (xpos + offX) * scale, y = (ypos + offY) * scale;
+            int w = overlay->width() * oXScale, h = overlay->height() * oYScale;
+            // We need to transform the image with QImage::scaled() because painter.drawImage() will butcher it, even with smoothing enabled
+            // However, the width/height need to be rounded to integers
+            int iW = round(w), iH = round(h);
+            painter.drawImage(QRectF((x - (iW - w) / 2.f) / ratio, (y - (iH - h) / 2.f) / ratio, iW / ratio, iH / ratio), overlay->scaled(iW, iH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+        }
     } else {
         // Otherwise, draw a solid background
         painter.setBrush(QBrush(bgColor));
@@ -172,6 +197,9 @@ void KeyWidget::paintEvent(QPaintEvent*){
             if(!strcmp(key.name, "sniper"))
                 // Sniper key uses a reddish base color instead of the usual grey
                 bgPainter.setBrush(QBrush(sniperColor));
+            else if(model == KeyMap::SCIMITAR && !strncmp(key.name, "thumb", 5) && strcmp(key.name, "thumb"))
+                // Thumbgrid keys use a black color
+                bgPainter.setBrush(QBrush(thumbColor));
             else if(!strcmp(key.name, "lsidel") || !strcmp(key.name, "rsidel"))
                 // Strafe side lights have transparent background
                 bgPainter.setBrush(QBrush(sidelightColor));
@@ -219,7 +247,6 @@ void KeyWidget::paintEvent(QPaintEvent*){
     decPainter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
     if(_rgbMode){
         // Draw key colors (RGB mode)
-        decPainter.setPen(QPen(QColor(255, 255, 255), 1.5));
         QHashIterator<QString, Key> k(keyMap);
         uint i = -1;
         while(k.hasNext()){
@@ -232,10 +259,23 @@ void KeyWidget::paintEvent(QPaintEvent*){
             float y = key.y + offY - 1.8f;
             float w = 3.6f;
             float h = 3.6f;
-            if(_displayColorMap.contains(key.name))
-                decPainter.setBrush(QBrush(_displayColorMap.value(key.name)));
+            // Display a white circle around regular keys, red circle around indicators
+            if(_indicators.contains(key.name))
+                decPainter.setPen(QPen(QColor(255, 248, 136), 1.5));
             else
-                decPainter.setBrush(QBrush(_colorMap.value(key.name)));
+                decPainter.setPen(QPen(QColor(255, 255, 255), 1.5));
+            QRgb color;
+            if(_displayColorMap.contains(key.name))
+                // Color in display map? Grab it from there
+                // (monochrome conversion not necessary as this would have been done by the animation)
+                color = _displayColorMap.value(key.name);
+            else {
+                // Otherwise, read from base map
+                color = _colorMap.value(key.name);
+                if(_monochrome)
+                    color = monoRgb(qRed(color), qGreen(color), qBlue(color));
+            }
+            decPainter.setBrush(QBrush(color));
             decPainter.drawEllipse(QRectF(x * scale, y * scale, w * scale, h * scale));
         }
     } else {
@@ -282,6 +322,8 @@ void KeyWidget::paintEvent(QPaintEvent*){
                     break;
                 }
             }
+            if(keyName == "thumb1" && model == KeyMap::SABRE)
+                name = "∙";
             if(keyName == "mr" || keyName == "m1" || keyName == "m2" || keyName == "m3" || keyName == "up" || keyName == "down" || keyName == "left" || keyName == "right")
                 // Use a smaller size for MR, M1 - M3, and arrow keys
                 font.setPixelSize(font.pixelSize() * 0.75);
