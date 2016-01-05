@@ -48,6 +48,31 @@ int _nk95cmd(usbdevice* kb, uchar bRequest, ushort wValue, const char* file, int
     return 0;
 }
 
+void os_sendindicators(usbdevice* kb){
+    uchar ileds = kb->ileds;
+    // Get a list of LED elements from handle 0
+    long ledpage = kHIDPage_LEDs;
+    const void* keys[] = { CFSTR(kIOHIDElementUsagePageKey) };
+    const void* values[] = { CFNumberCreate(kCFAllocatorDefault, kCFNumberLongType, &ledpage) };
+    CFDictionaryRef matching = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(values[0]);
+    CFArrayRef leds;
+    kern_return_t res = (*kb->handles[0])->copyMatchingElements(kb->handles[0], matching, &leds, 0);
+    CFRelease(matching);
+    if(res != kIOReturnSuccess)
+        return;
+    // Iterate through them and update the LEDs which have changed
+    CFIndex count = CFArrayGetCount(leds);
+    for(CFIndex i = 0; i < count; i++){
+        IOHIDElementRef led = (void*)CFArrayGetValueAtIndex(leds, i);
+        uint32_t usage = IOHIDElementGetUsage(led);
+        IOHIDValueRef value = IOHIDValueCreateWithIntegerValue(kCFAllocatorDefault, led, 0, !!(ileds & (1 << (usage - 1))));
+        (*kb->handles[0])->setValue(kb->handles[0], led, value, 5000, 0, 0, 0);
+        CFRelease(value);
+    }
+    CFRelease(leds);
+}
+
 int os_resetusb(usbdevice* kb, const char* file, int line){
     kern_return_t res = kb->lastresult;
     if(IS_DISCONNECT_FAILURE(res))
@@ -108,13 +133,13 @@ static void intreport(void* context, IOReturn result, void* sender, IOHIDReportT
 }
 
 // input_mac.c
-extern void keyretrigger(usbdevice* kb);
+extern void keyretrigger(CFRunLoopTimerRef timer, void* info);
 
 void* os_inputmain(void* context){
     usbdevice* kb = context;
     int index = INDEX_OF(kb, keyboard);
     // Schedule async events for the device on this thread
-    CFRunLoopRef runloop = CFRunLoopGetCurrent();
+    CFRunLoopRef runloop = kb->input_loop = CFRunLoopGetCurrent();
     int count = (IS_RGB(kb->vendor, kb->product)) ? 4 : 3;
     for(int i = 0; i < count; i++){
         CFTypeRef eventsource;
@@ -141,16 +166,25 @@ void* os_inputmain(void* context){
         (*kb->handles[2])->setInputReportCallback(kb->handles[2], urbinput[2], 15, intreport, kb, 0);
     }
 
-    // Run the run loop for up to 2ms at a time, then check for key repeats
+    // Start a timer for key repeat broadcasts
+    CFRunLoopTimerContext krctx = { 0, kb, NULL, NULL, NULL };
+    CFRunLoopTimerRef krtimer = kb->krtimer = CFRunLoopTimerCreate(kCFAllocatorDefault,
+                                                                   CFAbsoluteTimeGetCurrent() + 0.001, 0.001,   // Set it to run every 1ms
+                                                                   0, 0,
+                                                                   keyretrigger, &krctx);
+    CFRunLoopTimerSetTolerance(krtimer, 0.015);         // Set a maximum tolerance of 15ms
+    // We don't actually add the timer to the run loop yet. There's no need to run the function until a key is actually pressed,
+    // so the timer is added and removed dynamically.
+
+    // Start the run loop
     while(1){
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
+        CFRunLoopRun();
+        // If we get here, the device should be disconnected
         pthread_mutex_lock(imutex(kb));
         if(!IS_CONNECTED(kb)){
-            // Make sure the device hasn't disconnected
             pthread_mutex_unlock(imutex(kb));
             break;
         }
-        keyretrigger(kb);
         pthread_mutex_unlock(imutex(kb));
     }
 
@@ -205,6 +239,10 @@ void os_closeusb(usbdevice* kb){
         (*kb->handles[i])->Release(kb->handles[i]);
         kb->handles[i] = 0;
     }
+    if(kb->input_loop){
+        CFRunLoopStop(kb->input_loop);
+        kb->input_loop = 0;
+    }
 }
 
 usbdevice* usbadd(hid_dev_t handle, io_object_t** rm_notify){
@@ -245,7 +283,7 @@ usbdevice* usbadd(hid_dev_t handle, io_object_t** rm_notify){
                 // Read the serial number and name
                 usbgetstr(handle, CFSTR(kIOHIDSerialNumberKey), keyboard[i].serial, SERIAL_LEN);
                 usbgetstr(handle, CFSTR(kIOHIDProductKey), keyboard[i].name, KB_NAME_LEN);
-                ckb_info("Connecting %s (S/N: %s)\n", keyboard[i].name, keyboard[i].serial);
+                ckb_info("Connecting %s at %s%d\n", keyboard[i].name, devpath, i);
                 // Device mutex remains locked
                 break;
             }
@@ -317,8 +355,9 @@ static int seize_wait(hid_dev_t handle){
     // HACK: We shouldn't seize the HID device until it's successfully added to the service registry.
     // Otherwise, OSX might think there's no keyboard/mouse connected.
     long location = usbgetlong(handle, CFSTR(kIOHIDLocationIDKey));
-    char location_str[18];
-    snprintf(location_str, sizeof(location_str), "@%lx", location);
+    char location_var[18], location_fixed[18];
+    snprintf(location_var, sizeof(location_var), "@%lx", location);
+    snprintf(location_fixed, sizeof(location_fixed), "@%08x", (int)location);
     // Open master port (if not done yet)
     static mach_port_t master = 0;
     kern_return_t res;
@@ -341,7 +380,7 @@ static int seize_wait(hid_dev_t handle){
             IORegistryEntryGetPath(child_service, kIOServicePlane, path);
             IOObjectRelease(child_service);
             // Look for an entry that matches the location of the device and says "HID". If found, we can proceed with adding the device
-            if(strstr(path, location_str) && strstr(path, "HID")){
+            if((strstr(path, location_var) || strstr(path, location_fixed)) && strstr(path, "HID")){
                 IOObjectRelease(child_iter);
                 return 0;
             }
@@ -352,6 +391,15 @@ static int seize_wait(hid_dev_t handle){
     return -3;
 }
 
+// Hacky way of trying something over and over again until it works. 500ms intervals, max 5s
+#define wait_loop(error, operation)  do {               \
+    int trial = 0;                                      \
+    while(((error) = (operation)) != kIOReturnSuccess){ \
+        if(++trial == 10)                               \
+            break;                                      \
+        usleep(500000);                                 \
+    } } while(0)
+
 static void iterate_devices(void* context, io_iterator_t iterator){
     io_service_t device;
     euid_guard_start;
@@ -359,14 +407,15 @@ static void iterate_devices(void* context, io_iterator_t iterator){
         // Get the plugin interface for the device
         IOCFPlugInInterface** plugin = 0;
         SInt32 score = 0;
-        kern_return_t err = IOCreatePlugInInterfaceForService(device, kIOHIDDeviceTypeID, kIOCFPlugInInterfaceID, &plugin, &score);
+        kern_return_t err;
+        wait_loop(err, IOCreatePlugInInterfaceForService(device, kIOHIDDeviceTypeID, kIOCFPlugInInterfaceID, &plugin, &score));
         if(err != kIOReturnSuccess){
             ckb_err("Failed to create device plugin: %x\n", err);
             goto release;
         }
         // Get the device interface
         hid_dev_t handle;
-        err = (*plugin)->QueryInterface(plugin, CFUUIDGetUUIDBytes(kIOHIDDeviceDeviceInterfaceID), (LPVOID*)&handle);
+        wait_loop(err, (*plugin)->QueryInterface(plugin, CFUUIDGetUUIDBytes(kIOHIDDeviceDeviceInterfaceID), (LPVOID*)&handle));
         if(err != kIOReturnSuccess){
             ckb_err("QueryInterface failed: %x\n", err);
             goto release;
@@ -402,7 +451,7 @@ int usbmain(){
         // Keyboards
         P_K65, P_K70, P_K70_NRGB, P_K95, P_K95_NRGB, P_STRAFE, P_STRAFE_NRGB,
         // Mice
-        P_M65, P_SCIMITAR
+        P_M65, P_SABRE_O, P_SABRE_L, P_SCIMITAR
     };
     // Tell IOService which type of devices we want (IOHIDDevices matching the supported vendor/products)
     CFMutableDictionaryRef match = IOServiceMatching(kIOHIDDeviceKey);

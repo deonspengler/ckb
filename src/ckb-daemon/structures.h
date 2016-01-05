@@ -159,6 +159,11 @@ typedef struct {
 // Bricked firmware?
 #define NEEDS_FW_UPDATE(kb) ((kb)->fwversion == 0 && HAS_FEATURES((kb), FEAT_FWUPDATE | FEAT_FWVERSION))
 
+// Lines per scroll (OSX only)
+#define SCROLL_ACCELERATED  0
+#define SCROLL_MIN          1
+#define SCROLL_MAX          10
+
 // vtables for keyboards/mice (see command.h)
 extern const union devcmd vtable_keyboard;
 extern const union devcmd vtable_keyboard_nonrgb;
@@ -172,11 +177,15 @@ typedef struct {
     // Function table (see command.h)
     const union devcmd* vtable;
     // I/O devices
+    // Note that FDs have 1 added to them, because these are initialized to zero when the program starts but zero is technically a valid FD
+    // So the actual value is (fd - 1)
 #ifdef OS_LINUX
     struct udev_device* udev;
     int handle;
-    int uinput;
+    int uinput_kb, uinput_mouse;
 #else
+    CFRunLoopRef input_loop;
+    CFRunLoopTimerRef krtimer;
     struct timespec keyrepeat;
     long location_id;
     hid_dev_t handle;
@@ -187,6 +196,8 @@ typedef struct {
     IOOptionBits modifiers;
     short lastkeypress;
     uchar mousestate;
+    char scroll_rate;
+    pthread_t indicthread;
 #endif
     // Thread used for USB/devnode communication. To close: lock mutexes, set handle to zero, unlock, then wait for thread to stop
     pthread_t thread;
@@ -219,7 +230,7 @@ typedef struct {
     // Current input state
     usbinput input;
     // Indicator LED state
-    uchar hw_ileds, ileds;
+    uchar hw_ileds, hw_ileds_old, ileds;
     // Color dithering in use
     char dither;
 } usbdevice;

@@ -144,6 +144,15 @@ void KPerfWidget::setPerf(KbPerf* newPerf, KbProfile* newProfile){
     } else {
         foreach(QWidget* w, k95Widgets)
             w->hide();
+        if(profile->keyMap().model() == KeyMap::STRAFE) { // hide indicators unsupported by STRAFE
+            ui->muteBox->hide();
+            ui->muteColorOn->hide();
+            ui->muteColorOff->hide();
+            ui->muteColorNA->hide();
+            ui->label_12->hide();
+            ui->label_14->hide();
+            ui->label_17->hide();
+       }
     }
 }
 

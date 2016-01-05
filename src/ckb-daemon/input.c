@@ -115,7 +115,7 @@ static void inputupdate_keys(usbdevice* kb){
 
 void inputupdate(usbdevice* kb){
 #ifdef OS_LINUX
-    if(!kb->uinput
+    if((!kb->uinput_kb || !kb->uinput_mouse)
 #else
     if(!kb->event
 #endif
@@ -135,21 +135,32 @@ void inputupdate(usbdevice* kb){
 }
 
 void updateindicators_kb(usbdevice* kb, int force){
-    uchar old = kb->hw_ileds;
-    os_updateindicators(kb, force);
+    // Read current hardware indicator state (set externally)
+    uchar old = kb->ileds, hw_old = kb->hw_ileds_old;
+    uchar new = kb->hw_ileds, hw_new = new;
+    // Update them if needed
+    if(kb->active){
+        usbmode* mode = kb->profile->currentmode;
+        new = (new & ~mode->ioff) | mode->ion;
+    }
+    kb->ileds = new;
+    kb->hw_ileds_old = hw_new;
+    if(old != new || force){
+        DELAY_SHORT(kb);
+        os_sendindicators(kb);
+    }
     // Print notifications if desired
     if(!kb->active)
         return;
-    uchar new = kb->hw_ileds;
     usbmode* mode = kb->profile->currentmode;
     uchar indicators[] = { I_NUM, I_CAPS, I_SCROLL };
     for(unsigned i = 0; i < sizeof(indicators) / sizeof(uchar); i++){
         uchar mask = indicators[i];
-        if((old & mask) == (new & mask))
+        if((hw_old & mask) == (hw_new & mask))
             continue;
         for(int notify = 0; notify < OUTFIFO_MAX; notify++){
             if(mode->inotify[notify] & mask)
-                nprintind(kb, notify, mask, new & mask);
+                nprintind(kb, notify, mask, hw_new & mask);
         }
     }
 }
@@ -313,7 +324,7 @@ static void _cmd_macro(usbmode* mode, const char* keys, const char* assignment){
         bind->macros = realloc(bind->macros, (bind->macrocap += 16) * sizeof(keymacro));
 }
 
-void cmd_macro(usbdevice* kb, usbmode* mode, const char* keys, const char* assignment){
+void cmd_macro(usbdevice* kb, usbmode* mode, const int notifynumber, const char* keys, const char* assignment){
     pthread_mutex_lock(imutex(kb));
     _cmd_macro(mode, keys, assignment);
     pthread_mutex_unlock(imutex(kb));

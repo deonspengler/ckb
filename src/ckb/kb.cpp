@@ -2,7 +2,9 @@
 #include <QSet>
 #include <QUrl>
 #include <QMutex>
+#include <QDateTime>
 #include "kb.h"
+#include "kbmanager.h"
 
 // All active devices
 static QSet<Kb*> activeDevices;
@@ -10,19 +12,21 @@ static QSet<Kb*> activeDevices;
 static QSet<QString> notifyPaths;
 static QMutex notifyPathMutex;
 
-int Kb::_frameRate = 30;
+int Kb::_frameRate = 30, Kb::_scrollSpeed = 0;
 KeyMap::Layout Kb::_layout = KeyMap::NO_LAYOUT;
-bool Kb::_dither = false;
+bool Kb::_dither = false, Kb::_mouseAccel = true;
 
 Kb::Kb(QObject *parent, const QString& path) :
-    QThread(parent), devpath(path), cmdpath(path + "/cmd"), notifyPath(path + "/notify1"),
-    features("N/A"), firmware("N/A"), pollrate("N/A"), monochrome(false),
+    QThread(parent), features("N/A"), firmware("N/A"), pollrate("N/A"), monochrome(false),
+    devpath(path), cmdpath(path + "/cmd"), notifyPath(path + "/notify1"),
     _currentProfile(0), _currentMode(0), _model(KeyMap::NO_MODEL),
+    lastAutoSave(QDateTime::currentMSecsSinceEpoch()),
     _hwProfile(0), prevProfile(0), prevMode(0),
     cmd(cmdpath), notifyNumber(1), _needsSave(false)
 {
     memset(iState, 0, sizeof(iState));
     memset(hwLoading, 0, sizeof(hwLoading));
+
     // Get the features, model, serial number, FW version (if available), and poll rate (if available) from /dev nodes
     QFile ftpath(path + "/features"), mpath(path + "/model"), spath(path + "/serial"), fwpath(path + "/fwversion"), ppath(path + "/pollrate");
     if(ftpath.open(QIODevice::ReadOnly)){
@@ -66,6 +70,8 @@ Kb::Kb(QObject *parent, const QString& path) :
         ppath.close();
     }
 
+    prefsPath = "Devices/" + usbSerial;
+
     hwModeCount = (_model == KeyMap::K95) ? 3 : 1;
     // Open cmd in non-blocking mode so that it doesn't lock up if nothing is reading
     // (e.g. if the daemon crashed and didn't clean up the node)
@@ -95,6 +101,9 @@ Kb::Kb(QObject *parent, const QString& path) :
     // Write ANSI/ISO flag to daemon (OSX only)
     cmd.write("layout ");
     cmd.write(KeyMap::isISO(_layout) ? "iso" : "ansi");
+    // Also OSX only: scroll speed and mouse acceleration
+    cmd.write(QString("accel %1\n").arg(QString(_mouseAccel ? "on" : "off")).toLatin1());
+    cmd.write(QString("scrollspeed %1\n").arg(_scrollSpeed).toLatin1());
 #endif
     cmd.write(QString("\nactive\n@%1 get :hwprofileid").arg(notifyNumber).toLatin1());
     hwLoading[0] = true;
@@ -114,27 +123,25 @@ Kb::Kb(QObject *parent, const QString& path) :
 }
 
 Kb::~Kb(){
+    // Save settings first
+    save();
+    // Kill notification thread and remove node
     activeDevices.remove(this);
     if(!isOpen()){
         terminate();
         wait(1000);
         return;
     }
-    // Kill notification thread and remove node
     if(notifyNumber > 0)
         cmd.write(QString("idle\nnotifyoff %1\n").arg(notifyNumber).toLatin1());
     cmd.flush();
     terminate();
     wait(1000);
-    // Reset to hardware profile
-    if(_hwProfile){
-        _currentProfile = _hwProfile;
-        hwSave();
-    }
     cmd.close();
 }
 
 void Kb::frameRate(int newFrameRate){
+    KbManager::fps(newFrameRate);
     // If the rate has changed, send to all devices
     if(newFrameRate == _frameRate)
         return;
@@ -183,8 +190,37 @@ void Kb::dither(bool newDither){
     }
 }
 
-void Kb::load(CkbSettings& settings){
+void Kb::mouseAccel(bool newAccel){
+    if(newAccel == _mouseAccel)
+        return;
+    _mouseAccel = newAccel;
+#ifdef Q_OS_MACX
+    // Update all devices
+    foreach(Kb* kb, activeDevices){
+        kb->cmd.write(QString("accel %1\n").arg(QString(newAccel ? "on" : "off")).toLatin1());
+        kb->cmd.flush();
+    }
+#endif
+}
+
+void Kb::scrollSpeed(int newSpeed){
+    if(newSpeed == _scrollSpeed)
+        return;
+    _scrollSpeed = newSpeed;
+#ifdef Q_OS_MACX
+    // Update all devices
+    foreach(Kb* kb, activeDevices){
+        kb->cmd.write(QString("scrollspeed %1\n").arg(newSpeed).toLatin1());
+        kb->cmd.flush();
+    }
+#endif
+}
+
+void Kb::load(){
+    if(prefsPath.isEmpty())
+        return;
     _needsSave = false;
+    CkbSettings settings(prefsPath);
     // Read profiles
     KbProfile* newCurrentProfile = 0;
     QString current = settings.value("CurrentProfile").toString().trimmed().toUpper();
@@ -212,8 +248,11 @@ void Kb::load(CkbSettings& settings){
     emit profileAdded();
 }
 
-void Kb::save(CkbSettings& settings){
+void Kb::save(){
+    if(prefsPath.isEmpty())
+        return;
     _needsSave = false;
+    CkbSettings settings(prefsPath, true);
     QString guids, currentGuid;
     foreach(KbProfile* profile, _profiles){
         guids.append(" " + profile->id().guidString());
@@ -223,6 +262,14 @@ void Kb::save(CkbSettings& settings){
     }
     settings.setValue("CurrentProfile", currentGuid);
     settings.setValue("Profiles", guids.trimmed());
+}
+
+void Kb::autoSave(){
+    quint64 now = QDateTime::currentMSecsSinceEpoch();
+    if(needsSave() && now >= lastAutoSave + 15 * 1000 && !CkbSettings::isBusy()){
+        save();
+        lastAutoSave = now;
+    }
 }
 
 void Kb::hwSave(){

@@ -12,29 +12,18 @@ class Kb : public QThread
 {
     Q_OBJECT
 public:
-    // Creates a keyboard object with the given device path
-    Kb(QObject *parent, const QString& path);
-    ~Kb();
-
-    // File paths
-    QString devpath, cmdpath, notifyPath;
     // USB model and serial number
     QString usbModel, usbSerial;
     // Device information
     QString features, firmware, pollrate;
     bool monochrome;
 
-    // Is this the keyboard at the given serial/path?
-    inline bool matches(const QString& path, const QString& serial) { return path.trimmed() == devpath.trimmed() && usbSerial == serial.trimmed().toUpper(); }
-
     // Keyboard model
     inline KeyMap::Model    model() const                       { return _model; }
     bool                    isKeyboard() const                  { return KeyMap::isKeyboard(_model); }
     bool                    isMouse() const                     { return KeyMap::isMouse(_model); }
 
-    inline bool isOpen() const { return cmd.isOpen(); }
-
-    // Frame rate (all devices)
+    // Frame rate (all devices). Also updates the event timer in KbManager.
     static inline int               frameRate()                         { return _frameRate; }
     static void                     frameRate(int newFrameRate);
     // Layout (all devices)
@@ -43,6 +32,12 @@ public:
     // Whether dithering is used (all devices)
     static inline bool              dither()                            { return _dither; }
     static void                     dither(bool newDither);
+    // OSX: mouse acceleration toggle (all devices)
+    static inline bool              mouseAccel()                        { return _mouseAccel; }
+    static void                     mouseAccel(bool newAccel);
+    // OSX: scroll speed (-1 = use acceleration)
+    static inline int               scrollSpeed()                       { return _scrollSpeed; }
+    static void                     scrollSpeed(int newSpeed);
 
     // Profile saved to hardware
     inline KbProfile*   hwProfile() { return _hwProfile; }
@@ -82,10 +77,13 @@ public:
     inline KbMode*      newMode(KbMode* other)          { return new KbMode(this, getKeyMap(), *other); }
 
     // Load/save stored settings
-    void load(CkbSettings& settings);
-    void save(CkbSettings& settings);
-    void hwSave();
+    void load();
+    void save();
     bool needsSave() const;
+
+    void hwSave();
+
+    ~Kb();
 
 signals:
     // Layout/model updated
@@ -104,7 +102,11 @@ signals:
     void fwUpdateFinished(bool succeeded);
 
 public slots:
+    // Send lighting and settings to the driver
     void frameUpdate();
+
+    // Auto-save every 15s (if settings have changed, and no other writes are in progress)
+    void autoSave();
 
 private slots:
     // Processes lines read from the notification node
@@ -114,10 +116,26 @@ private slots:
     void deletePrevious();
 
 private:
-    static int _frameRate;
+    // Following methods should only be used by KbManager
+    friend class KbManager;
+
+    // Creates a keyboard object with the given device path
+    Kb(QObject *parent, const QString& path);
+
+    inline bool isOpen() const { return cmd.isOpen(); }
+
+    // File paths
+    QString devpath, cmdpath, notifyPath;
+    // Is this the keyboard at the given serial/path?
+    inline bool matches(const QString& path, const QString& serial) { return path.trimmed() == devpath.trimmed() && usbSerial == serial.trimmed().toUpper(); }
+
+private:
+    // Following properties shouldn't be used by any other classes
     static KeyMap::Layout _layout;
     void updateLayout();
-    static bool _dither;
+
+    static int _frameRate, _scrollSpeed;
+    static bool _dither, _mouseAccel;
 
     KbProfile*          _currentProfile;
     QList<KbProfile*>   _profiles;
@@ -127,6 +145,10 @@ private:
 
     // Indicator light state
     bool iState[KbPerf::HW_I_COUNT];
+
+    // CkbSettings path
+    QString prefsPath;
+    quint64 lastAutoSave;
 
     // Current firmware update file
     QString fwUpdPath;

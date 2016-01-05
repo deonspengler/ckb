@@ -1,3 +1,4 @@
+#include "command.h"
 #include "device.h"
 #include "input.h"
 
@@ -123,15 +124,15 @@ extern void wheel_accel(io_connect_t event, int* deltaAxis1, SInt32* fixedDeltaA
 extern void mouse_accel(io_connect_t event, int* x, int* y);
 
 // Mouse wheel
-static void postevent_wheel(io_connect_t event, int use_accel, int value){
+static void postevent_wheel(io_connect_t event, int scroll_rate, int value){
     NXEventData mm;
     memset(&mm, 0, sizeof(mm));
-    if(use_accel){
+    if(scroll_rate == SCROLL_ACCELERATED){
         wheel_accel(event, &value, &mm.scrollWheel.fixedDeltaAxis1, &mm.scrollWheel.pointDeltaAxis1);
         mm.scrollWheel.deltaAxis1 = value;
     } else {
-        // If acceleration is disabled, use a fixed delta of 3
-        mm.scrollWheel.deltaAxis1 = value * 3;
+        // If acceleration is disabled, use a fixed delta
+        mm.scrollWheel.deltaAxis1 = value * scroll_rate;
     }
     postevent(event, NX_SCROLLWHEELMOVED, &mm, 0, 0, 0);
 }
@@ -241,15 +242,69 @@ void os_inputclose(usbdevice* kb){
     }
 }
 
+// Starts/stops key-repeat timer as appropriate
+static void setkrtimer(usbdevice* kb){
+    if(kb->lastkeypress == KEY_NONE)
+        CFRunLoopRemoveTimer(kb->input_loop, kb->krtimer, kCFRunLoopCommonModes);
+    else
+        CFRunLoopAddTimer(kb->input_loop, kb->krtimer, kCFRunLoopCommonModes);
+}
+
+// Retrigger the last-pressed key
+static void _keyretrigger(usbdevice* kb){
+    int scancode = kb->lastkeypress;
+    postevent_kp(kb->event, kb->modifiers, scancode, 1, 0, 1);
+    // Set next key repeat time
+    long repeat = repeattime(kb->event, 0);
+    if(repeat > 0)
+        timespec_add(&kb->keyrepeat, repeat);
+    else
+        kb->lastkeypress = KEY_NONE;
+}
+
+void keyretrigger(CFRunLoopTimerRef timer, void* info){
+    usbdevice* kb = info;
+    // Repeat the key as many times as needed to catch up
+    struct timespec time;
+    clock_gettime(CLOCK_MONOTONIC, &time);
+    while(!(kb->lastkeypress & (SCAN_SILENT | SCAN_MOUSE)) && timespec_ge(time, kb->keyrepeat))
+        _keyretrigger(kb);
+    setkrtimer(kb);
+}
+
+// Unlike Linux, OSX keyboards have independent caps lock states. This means they're set by the driver itself so we don't poll for external events.
+// However, updating indicator state requires locking dmutex and we never want to do that in the input thread.
+// Instead, we launch a single-shot thread to update the state.
+static void* indicator_update(void* context){
+    usbdevice* kb = context;
+    pthread_mutex_lock(dmutex(kb));
+    {
+        pthread_mutex_lock(imutex(kb));
+        IOOptionBits modifiers = kb->modifiers;
+        // Allow the thread to be spawned again
+        kb->indicthread = 0;
+        pthread_mutex_unlock(imutex(kb));
+        // Num lock on, Caps dependent on modifier state
+        uchar ileds = 1 | !!(modifiers & NX_ALPHASHIFTMASK) << 1;
+        kb->hw_ileds = ileds;
+        kb->vtable->updateindicators(kb, 0);
+    }
+    pthread_mutex_unlock(dmutex(kb));
+    return 0;
+}
+
 void os_keypress(usbdevice* kb, int scancode, int down){
+    // Trigger any pending repeats first
+    keyretrigger(NULL, kb);
+    // Key/button pressed
     if(scancode & SCAN_MOUSE){
         if(scancode == BTN_WHEELUP){
             if(down)
-                postevent_wheel(kb->event, !!(kb->features & FEAT_MOUSEACCEL), 1);
+                postevent_wheel(kb->event, kb->scroll_rate, 1);
             return;
         } else if(scancode == BTN_WHEELDOWN){
             if(down)
-                postevent_wheel(kb->event, !!(kb->features & FEAT_MOUSEACCEL), -1);
+                postevent_wheel(kb->event, kb->scroll_rate, -1);
             return;
         }
         int button = scancode & ~SCAN_MOUSE;
@@ -292,6 +347,14 @@ void os_keypress(usbdevice* kb, int scancode, int down){
         if(down)
             kb->modifiers ^= NX_ALPHASHIFTMASK;
         isMod = 1;
+        // Detach a thread to update the indicator state
+        if(!kb->indicthread){
+            // The thread is only spawned if kb->indicthread is null.
+            // Due to the logic inside the thread, this means that it could theoretically be spawned twice, but never a third time.
+            // Moreover, if it is spawned more than once, the indicator state will remain correct due to dmutex staying locked.
+            if(!pthread_create(&kb->indicthread, 0, indicator_update, kb))
+                pthread_detach(kb->inputthread);
+        }
     }
     else if(scancode == KEY_LEFTSHIFT) mod = NX_DEVICELSHIFTKEYMASK;
     else if(scancode == KEY_RIGHTSHIFT) mod = NX_DEVICERSHIFTKEYMASK;
@@ -329,73 +392,21 @@ void os_keypress(usbdevice* kb, int scancode, int down){
     }
 
     postevent_kp(kb->event, kb->modifiers, scancode, down, isMod, 0);
-}
-
-// Retrigger the last-pressed key
-void _keyretrigger(usbdevice* kb){
-    int scancode = kb->lastkeypress;
-    postevent_kp(kb->event, kb->modifiers, scancode, 1, 0, 1);
-    // Set next key repeat time
-    long repeat = repeattime(kb->event, 0);
-    if(repeat > 0)
-        timespec_add(&kb->keyrepeat, repeat);
-    else
-        kb->lastkeypress = KEY_NONE;
-}
-
-void keyretrigger(usbdevice* kb){
-    // Repeat the key as many times as needed to catch up
-    struct timespec time;
-    clock_gettime(CLOCK_MONOTONIC, &time);
-    while(!(kb->lastkeypress & (SCAN_SILENT | SCAN_MOUSE)) && timespec_ge(time, kb->keyrepeat))
-        _keyretrigger(kb);
+    setkrtimer(kb);
 }
 
 void os_mousemove(usbdevice* kb, int x, int y){
-    postevent_mm(kb->event, x, y, !!(kb->features & FEAT_MOUSEACCEL), kb->mousestate);
+    postevent_mm(kb->event, x, y, HAS_FEATURES(kb, FEAT_MOUSEACCEL), kb->mousestate);
 }
 
 void os_isync(usbdevice* kb){
     // OSX doesn't have any equivalent to the SYN_ events
 }
 
-void os_updateindicators(usbdevice* kb, int force){
+int os_setupindicators(usbdevice* kb){
     // Set NumLock on permanently
-    char ileds = 1;
-    // Set Caps Lock if enabled. Unlike Linux, OSX keyboards have independent caps lock states, so
-    // we use the last-assigned value rather than fetching it from the system
-    if(kb->modifiers & kCGEventFlagMaskAlphaShift)
-        ileds |= 2;
-    kb->hw_ileds = ileds;
-    if(kb->active){
-        usbmode* mode = kb->profile->currentmode;
-        ileds = (ileds & ~mode->ioff) | mode->ion;
-    }
-    if(force || ileds != kb->ileds){
-        kb->ileds = ileds;
-        // Get a list of LED elements from handle 0
-        long ledpage = kHIDPage_LEDs;
-        const void* keys[] = { CFSTR(kIOHIDElementUsagePageKey) };
-        const void* values[] = { CFNumberCreate(kCFAllocatorDefault, kCFNumberLongType, &ledpage) };
-        CFDictionaryRef matching = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-        CFRelease(values[0]);
-        CFArrayRef leds;
-        kern_return_t res = (*kb->handles[0])->copyMatchingElements(kb->handles[0], matching, &leds, 0);
-        CFRelease(matching);
-        if(res != kIOReturnSuccess)
-            return;
-        // Iterate through them and update the LEDs which have changed
-        DELAY_SHORT(kb);
-        CFIndex count = CFArrayGetCount(leds);
-        for(CFIndex i = 0; i < count; i++){
-            IOHIDElementRef led = (void*)CFArrayGetValueAtIndex(leds, i);
-            uint32_t usage = IOHIDElementGetUsage(led);
-            IOHIDValueRef value = IOHIDValueCreateWithIntegerValue(kCFAllocatorDefault, led, 0, !!(ileds & (1 << (usage - 1))));
-            (*kb->handles[0])->setValue(kb->handles[0], led, value, 5000, 0, 0, 0);
-            CFRelease(value);
-        }
-        CFRelease(leds);
-    }
+    kb->hw_ileds = kb->hw_ileds_old = kb->ileds = 1;
+    return 0;
 }
 
 #endif

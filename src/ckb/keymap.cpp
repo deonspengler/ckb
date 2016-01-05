@@ -59,6 +59,13 @@ static const KeyPatch patchIT[] = {
     {0, "<", "bslash_iso"}, {0, "-", "slash"},
 };
 
+static const KeyPatch patchMX[] = {
+    {0, "|", "grave"}, {0, "'", "minus"}, {0, "¿", "equal"},
+    {0, "´", "lbrace"}, {0, "+", "rbrace"},
+    {0, "Ñ", "colon"}, {0, "{", "quote"}, {0, "}", "hash"},
+    {0, "<", "bslash_iso"}, {0, "-", "slash"},
+};
+
 static const KeyPatch patchES[] = {
     {"oa", "º", "grave"}, {"quote", "'", "minus"}, {"lexclam", "¡", "equal"},
     {"grave", "`", "lbrace"}, {"plus", "+", "rbrace"},
@@ -127,12 +134,14 @@ static const Key K65TopRow[] = {
 #define K65_TOP_COUNT (sizeof(K65TopRow) / sizeof(Key))
 
 // Strafe has side lights
-#define KSTRAFE_X_START     10
+#define KSTRAFE_X_START     12
 #define KSTRAFE_WIDTH       (K70_WIDTH + (KSTRAFE_X_START * 2))
 #define KSTRAFE_HEIGHT      K95_HEIGHT
 
 static const Key KStrafeKeys[] = {
-  {0, "Sidelight", "lsidel", 0, KSTRAFE_HEIGHT/2, KSTRAFE_X_START, KSTRAFE_HEIGHT*2-4, true, false}, {0, "Sidelight", "rsidel", KSTRAFE_WIDTH, KSTRAFE_HEIGHT/2, KSTRAFE_X_START, KSTRAFE_HEIGHT*2-4, true, false}
+    {0, "Sidelight", "lsidel", 0, KSTRAFE_HEIGHT/2, KSTRAFE_X_START, KSTRAFE_HEIGHT, true, false},
+    {0, "Sidelight", "rsidel", KSTRAFE_WIDTH, KSTRAFE_HEIGHT/2, KSTRAFE_X_START, KSTRAFE_HEIGHT, true, false},
+    {0, "Logo", "logo", KSTRAFE_X_START, 0, NS, true, false}
 };
 
 // Mouse map - M65
@@ -220,6 +229,9 @@ static QHash<QString, Key> getMap(KeyMap::Model model, KeyMap::Layout layout){
         case KeyMap::IT:
             patch(map, patchIT);
             break;
+        case KeyMap::MX:
+            patch(map, patchMX);
+            break;
         case KeyMap::ES:
             patch(map, patchES);
             break;
@@ -273,9 +285,9 @@ static QHash<QString, Key> getMap(KeyMap::Model model, KeyMap::Layout layout){
         map = getMap(KeyMap::K70, layout);
         //move light and lock right
         map["light"].x=285 - K70_X_START;
-        map["light"].hasLed=false;
+        //map["light"].hasLed=false;
         map["lock"].x=297 - K70_X_START;
-        map["lock"].hasLed=false;
+        //map["lock"].hasLed=false;
         // move everything right to make the space for the left sidelight
         QMutableHashIterator<QString, Key> i(map);
         while(i.hasNext()){
@@ -285,6 +297,7 @@ static QHash<QString, Key> getMap(KeyMap::Model model, KeyMap::Layout layout){
         // add sidelights
         map["lsidel"] = KStrafeKeys[0];
         map["rsidel"] = KStrafeKeys[1];
+        map["logo"] = KStrafeKeys[2];
         // remove media controls
         map.remove("mute");
         map.remove("volup");
@@ -348,8 +361,12 @@ KeyMap::Layout KeyMap::locale(){
         return KeyMap::IT;
     else if(loc.startsWith("pl-"))
         return KeyMap::PL;
-    else if(loc.startsWith("es-"))
+    else if(loc.startsWith("es-es"))
+        // Spain uses the ES layout
         return KeyMap::ES;
+    else if(loc.startsWith("es-"))
+        // Other Spanish locales use MX
+        return KeyMap::MX;
     else if(loc.startsWith("se-"))
         return KeyMap::SE;
     else if(loc.startsWith("en-us") || loc.startsWith("en-au") || loc.startsWith("en-ca") || loc.startsWith("en-hk") || loc.startsWith("en-in") || loc.startsWith("en-nz") || loc.startsWith("en-ph") || loc.startsWith("en-sg") || loc.startsWith("en-za"))
@@ -380,6 +397,8 @@ KeyMap::Layout KeyMap::getLayout(const QString& name){
         return IT;
     if(lower == "pl")
         return PL;
+    if(lower == "mx")
+        return MX;
     if(lower == "es")
         return ES;
     if(lower == "se")
@@ -411,6 +430,8 @@ QString KeyMap::getLayout(KeyMap::Layout layout){
         return "it";
     case PL:
         return "pl";
+    case MX:
+        return "mx";
     case ES:
         return "es";
     case SE:
@@ -429,7 +450,8 @@ QStringList KeyMap::layoutNames(){
             << "German"
             << "Italian"
             << "Polish"
-            << "Spanish"
+            << "Spanish (Latin America)"
+            << "Spanish (Spain)"
             << "Swedish";
 }
 
